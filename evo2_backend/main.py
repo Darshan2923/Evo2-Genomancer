@@ -35,7 +35,7 @@ def run_brca1_analysis():
     import pandas as pd
     import os
     import seaborn as sns
-    from sklearn.metrics import roc_auc_score
+    from sklearn.metrics import roc_auc_score,roc_curve
 
     from evo2 import Evo2
     import torch
@@ -125,6 +125,27 @@ def run_brca1_analysis():
     y_true = (brca1_subset['class'] == 'LOF')
     auroc = roc_auc_score(y_true, -brca1_subset['evo2_delta_score'])
     print("AUROC: "+str(auroc))
+
+    # ----------------------------Calculate threshold start
+    y_true = (brca1_subset['class'] == 'LOF')
+    fpr, tpr, thresholds = roc_curve(y_true,-brca1_subset["evo2_delta_score"])
+    optimal_idx = (tpr - fpr).argmax()
+    optimal_threshold = -thresholds[optimal_idx]
+
+    lof_scores=brca1_subset.loc[brca1_subset['class'] == 'LOF', 'evo2_delta_score']
+    funcint_scores=brca1_subset.loc[brca1_subset['class'] == 'FUNC/INT', 'evo2_delta_score']
+
+    lof_std = lof_scores.std()
+    funcint_std = funcint_scores.std()
+
+    confidence_params={
+        "thresholds": optimal_threshold,
+        "lof_std": lof_std,
+        "funcint_std": funcint_std
+    }
+    print(f"Confidence params: {confidence_params}")
+
+    # ----------------------------Calculate threshold end
 
     plt.figure(figsize=(4, 2))
 
@@ -229,7 +250,25 @@ def analyze_variant(relative_pos_in_window,reference,alternative, window_seq,mod
     var_score=model.score_sequences([var_seq])[0]
     delta_score=var_score-ref_score
 
-    
+    threshold=-0.0009178519
+    lof_std=0.0015140239
+    funcint_std=0.0009016589
+
+    if delta_score<=threshold:
+        prediction="Likely pathogenic"
+        confidence=max(1.0, abs(delta_score-threshold)/lof_std)
+    else:
+        prediction="Likely benign"
+        confidence=max(1.0, abs(delta_score-threshold)/funcint_std)
+
+    return {
+        "reference": reference,
+        "alternative": alternative,
+        'delta_score':float(delta_score),
+        "prediction": prediction,
+        "classification_confidence": float(confidence)
+    }
+
 
 @app.cls(gpu="H100",volumes={mount_path:volume},max_containers=3,retries=2,scaledown_window=120)
 class Evo2Model:
@@ -241,6 +280,7 @@ class Evo2Model:
         print("Model loaded.")
 
     @modal.method()
+    # @modal.fastapi_endpoint(method="POST") when ready to deploy, uncomment this and run: "modal deploy main.py"
     def analyze_single_variant(self, variant_position:int,alternative:str,genome:str,chromosome:str):
         print("Genome: ",genome)
         print("Chromosome: ",chromosome)
@@ -263,10 +303,11 @@ class Evo2Model:
         print(f"Reference base at variant position: {reference}")
 
         #Analyze variant
+        result=analyze_variant(relative_pos_in_window=relative_pos,reference=reference,alternative=alternative,window_seq=window_sequence,model=self.model)
         
-        #Scoring
+        result["variant_position"]=variant_position
 
-
+        return result
 
 # @app.function(gpu="H100")
 # def test():
@@ -276,4 +317,5 @@ class Evo2Model:
 def main():
     # brca1_example.local()
     evo2Model=Evo2Model()
-    evo2Model.analyze_single_variant.remote(variant_position=43119628, alternative="G", genome="hg38", chromosome="chr17")
+    result=evo2Model.analyze_single_variant.remote(variant_position=43119628, alternative="G", genome="hg38", chromosome="chr17")
+    print(result)
