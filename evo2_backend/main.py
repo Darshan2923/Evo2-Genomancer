@@ -15,7 +15,7 @@ evo2_image=(
     .run_commands("git clone --recurse-submodules https://github.com/arcinstitute/evo2 && cd evo2 && pip install .")
     .run_commands("pip uninstall -y transformer-engine transformer_engine")
     .run_commands("pip install 'transformer_engine[pytorch]==1.13' --no-build-isolation")
-    .run_commands("pip install flash-attn==2.8.3 --no-build-isolation")
+    .run_commands("pip install flash-attn==2.6.3 --no-build-isolation")
     .pip_install_from_requirements("requirements.txt")
 )
 
@@ -24,8 +24,15 @@ app=modal.App("evo2-genomancer",image=evo2_image)
 volume=modal.Volume.from_name("hf_cache",create_if_missing=True)
 mount_path="/root/.cache/huggingface"
 
+
 @app.function(gpu="H100",volumes={mount_path:volume},timeout=1000)
 def run_brca1_analysis():
+    import torch
+    import transformer_engine.common.recipe
+
+    torch.serialization.add_safe_globals([
+        transformer_engine.common.recipe._OverrideLinearPrecision
+    ])
     import base64
     from io import BytesIO
     from Bio import SeqIO
@@ -38,13 +45,6 @@ def run_brca1_analysis():
     from sklearn.metrics import roc_auc_score,roc_curve
 
     from evo2 import Evo2
-    import torch
-    import transformer_engine.common.recipe
-
-    torch.serialization.add_safe_globals([
-        transformer_engine.common.recipe._OverrideLinearPrecision
-    ])
-
 
     WINDOW_SIZE=8192
 
@@ -274,9 +274,14 @@ def analyze_variant(relative_pos_in_window,reference,alternative, window_seq,mod
 class Evo2Model:
     @modal.enter()
     def load_evo2_model(self):
+        import torch
+        import transformer_engine.common.recipe
+        torch.serialization.add_safe_globals([
+            transformer_engine.common.recipe._OverrideLinearPrecision
+        ])
         from evo2 import Evo2
         print("Loading evo2 model...")
-        model=Evo2("evo2_7b")
+        self.model=Evo2("evo2_7b")
         print("Model loaded.")
 
     @modal.method()
